@@ -15,7 +15,7 @@ Este script automatiza a instalação completa do [Xibo CMS](https://xibosignage
 Clone o repositório e execute o script:
 
 ```bash
-git clone https://github.com/seu-usuario/xibo-installer.git
+git clone https://github.com/henriquelucas/xibodockerinstall
 cd xibo-installer
 chmod +x install-xibo.sh
 sudo ./install-xibo.sh
