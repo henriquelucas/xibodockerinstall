@@ -31,7 +31,7 @@ sed -i 's/65500:9505/9505:9505/' cms_custom-ports.yml
 sed -i 's/65501:80/127.0.0.1:8080:80/' cms_custom-ports.yml
 
 echo "[6/13] Subindo os containers Docker..."
-docker compose -f cms_custom-ports.yml up -d
+docker-compose -f cms_custom-ports.yml up -d
 
 echo "[7/13] Configurando Apache com proxy reverso..."
 a2enmod proxy proxy_http headers
