@@ -16,6 +16,6 @@ Clone o repositório e execute o script:
 
 ```bash
 git clone https://github.com/henriquelucas/xibodockerinstall
-cd xibo-installer
+cd xibodockerinstall
 chmod +x install-xibo.sh
-sudo ./install-xibo.sh
+sudo ./xibo.sh
