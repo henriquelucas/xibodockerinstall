@@ -61,7 +61,7 @@ version: "3.7"
 
 services:
   cms-db:
-    image: mysql:5.7
+    image: mysql:8.0
     volumes:
       - ./mysql:/var/lib/mysql
     environment:
@@ -72,7 +72,7 @@ services:
     restart: always
 
   cms-web:
-    image: xibosignage/xibo-cms:release-3.3.9
+    image: ghcr.io/xibosignage/xibo-cms:release-4.2.3
     ports:
       - "$PORT_HTTP:80"
     environment:
@@ -84,7 +84,7 @@ services:
     restart: always
 
   cms-xmr:
-    image: xibosignage/xibo-xmr:release-0.9.0
+    image: ghcr.io/xibosignage/xibo-xmr:1.0
     ports:
       - "$PORT_XMR:9505"
     restart: always
