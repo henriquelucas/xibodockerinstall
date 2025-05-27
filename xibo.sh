@@ -66,8 +66,8 @@ services:
       - ./mysql:/var/lib/mysql
     environment:
       MYSQL_ROOT_PASSWORD: $MYSQL_PASSWORD
-      MYSQL_DATABASE: xibo
-      MYSQL_USER: xibo
+      MYSQL_DATABASE: cms
+      MYSQL_USER: cms
       MYSQL_PASSWORD: $MYSQL_PASSWORD
     restart: always
 
