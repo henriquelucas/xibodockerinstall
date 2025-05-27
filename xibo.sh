@@ -88,9 +88,14 @@ services:
     ports:
       - "$PORT_XMR:9505"
     restart: always
+  cms-memcached:
+        image: memcached:alpine
+        command: memcached -m 15
+        restart: always
+        mem_limit: 100M
 
   cms-quickchart:
-    image: dannydirect/quickchart
+    image: ianw/quickchart
     restart: always
 EOF
 
