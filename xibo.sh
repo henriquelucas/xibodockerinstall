@@ -1,123 +1,116 @@
 #!/bin/bash
 
-# -------- INTERAÇÃO INICIAL --------
-read -p "Deseja utilizar um domínio para o Xibo CMS? (s/n): " USE_DOMAIN
+# -------- Pergunta inicial: domínio ou IP --------
+read -p "Deseja usar um domínio para o Xibo CMS? (s/n): " USAR_DOMINIO
 
-if [[ "$USE_DOMAIN" == "s" ]]; then
+if [[ "$USAR_DOMINIO" =~ ^[Ss]$ ]]; then
     read -p "Digite o domínio (ex: painel.suaempresa.com.br): " DOMAIN
     read -p "Digite o e-mail para SSL (Certbot): " EMAIL
-fi
-
-# -------- FUNÇÃO PARA CHECAR EXISTÊNCIA DE CONTAINER XIBO --------
-# Retorna o próximo índice para evitar conflito de nomes/portas
-function get_next_instance_index() {
-    base_name="xibo"
-    index=0
-    while true; do
-        # Nome do container esperado
-        if [[ $index -eq 0 ]]; then
-            container_name="${base_name}_cms"
-        else
-            container_name="${base_name}${index}_cms"
-        fi
-
-        # Checa se container existe
-        if docker ps -a --format '{{.Names}}' | grep -qw "$container_name"; then
-            ((index++))
-        else
-            echo "$index"
-            return
-        fi
-    done
-}
-
-# -------- CONFIGURAÇÕES INICIAIS --------
-XIBO_DIR_BASE="/opt/xibo"
-MYSQL_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16 ; echo '')
-
-# Obtem índice incremental para evitar conflito de instância
-INSTANCE_INDEX=$(get_next_instance_index)
-
-# Define prefixo e porta base
-if [[ "$INSTANCE_INDEX" -eq 0 ]]; then
-    INSTANCE_SUFFIX=""
 else
-    INSTANCE_SUFFIX="$INSTANCE_INDEX"
+    DOMAIN=""
+    EMAIL=""
 fi
 
-# Define nome da instância para arquivos, container e logs
-if [[ "$USE_DOMAIN" == "s" ]]; then
-    # Usa domínio para nomear, mas adiciona sufixo se for >0
-    DOMAIN_SAFE=$(echo "$DOMAIN" | tr '.' '_')
-    if [[ $INSTANCE_INDEX -eq 0 ]]; then
-        INSTANCE_NAME="$DOMAIN_SAFE"
-    else
-        INSTANCE_NAME="${DOMAIN_SAFE}${INSTANCE_SUFFIX}"
-    fi
-else
-    INSTANCE_NAME="xibo${INSTANCE_SUFFIX}"
+# -------- Verificar quantas instâncias já existem --------
+NUM_INSTANCES=$(docker ps -a --filter "name=xibo" --format "{{.Names}}" | grep -c '^xibo[0-9]\+')
+if [[ -z "$NUM_INSTANCES" ]]; then
+    NUM_INSTANCES=0
 fi
+INSTANCE_INDEX=$((NUM_INSTANCES + 1))
+INSTANCE_NAME="xibo${INSTANCE_INDEX}"
 
-# Diretório da instância
-XIBO_DIR="$XIBO_DIR_BASE$INSTANCE_SUFFIX"
+# -------- Definições de portas baseadas no índice --------
+# HTTP padrão: 8080 + (INSTANCE_INDEX -1)*10  (ex: xibo1=8080, xibo2=8090)
+# XMR padrão: 9505 + (INSTANCE_INDEX -1)*10   (ex: xibo1=9505, xibo2=9515)
+PORT_HTTP=$((8080 + (INSTANCE_INDEX - 1) * 10))
+PORT_XMR=$((9505 + (INSTANCE_INDEX - 1) * 10))
 
-# Define portas customizadas para evitar conflito (só quando usar domínio)
-# Porta base 9505 para CMS, 8080 para HTTP (proxy)
-PORT_CMS_BASE=9505
-PORT_HTTP_BASE=8080
+# -------- Diretório da instância --------
+XIBO_DIR="/opt/$INSTANCE_NAME"
 
-# Incrementa as portas conforme o índice da instância
-PORT_CMS=$((PORT_CMS_BASE + INSTANCE_INDEX))
-PORT_HTTP=$((PORT_HTTP_BASE + INSTANCE_INDEX))
-
-echo "Instalando Xibo CMS na instância: $INSTANCE_NAME"
+echo "[0/15] Instância detectada: $INSTANCE_NAME"
+echo "Portas configuradas: HTTP $PORT_HTTP, XMR $PORT_XMR"
 echo "Diretório: $XIBO_DIR"
-echo "Porta CMS: $PORT_CMS"
-echo "Porta HTTP: $PORT_HTTP"
 echo
 
-# -------- INSTALAÇÃO --------
-
-echo "[1/14] Instalando dependências..."
+# -------- Começar instalação --------
+echo "[1/15] Instalando dependências..."
 apt update && apt install -y docker-compose apache2 snapd unzip curl ufw
 
-echo "[2/14] Criando diretório do Xibo..."
+echo "[2/15] Criando diretório do Xibo..."
 mkdir -p "$XIBO_DIR"
-cd "$XIBO_DIR"
+cd "$XIBO_DIR" || { echo "Erro ao acessar diretório $XIBO_DIR"; exit 1; }
 
-echo "[3/14] Baixando e extraindo arquivos do Xibo..."
+echo "[3/15] Baixando e extraindo arquivos do Xibo..."
 wget -O xibo-docker.tar.gz https://xibosignage.com/api/downloads/cms
 tar --strip-components=1 -zxvf xibo-docker.tar.gz
 rm xibo-docker.tar.gz
 
-echo "[4/14] Criando arquivo config.env..."
+echo "[4/15] Criando arquivo config.env..."
 cp config.env.template config.env
+
+# Gerar senha aleatória para MySQL
+MYSQL_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16 ; echo '')
 sed -i "s/^MYSQL_PASSWORD=.*/MYSQL_PASSWORD=$MYSQL_PASSWORD/" config.env
 
-echo "[5/14] Configurando docker-compose e portas..."
+# -------- Criar docker-compose customizado para as portas --------
+echo "[5/15] Criando docker-compose customizado com portas personalizadas..."
 
-if [[ "$USE_DOMAIN" == "s" ]]; then
-    cp cms_custom-ports.yml.template cms_custom-ports.yml
-    rm -f docker-compose.yml
-    sed -i "s/65500:9505/$PORT_CMS:9505/" cms_custom-ports.yml
-    sed -i "s/65501:80/127.0.0.1:$PORT_HTTP:80/" cms_custom-ports.yml
-else
-    echo "→ Usando docker-compose.yml padrão (portas padrão)"
-fi
+cat > docker-compose.custom.yml <<EOF
+version: "3.7"
 
-echo "[6/14] Subindo os containers Docker..."
-if [[ "$USE_DOMAIN" == "s" ]]; then
-    docker-compose -f cms_custom-ports.yml up -d
-else
-    docker-compose up -d
-fi
+services:
+  cms-db:
+    image: mysql:5.7
+    volumes:
+      - ./mysql:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: $MYSQL_PASSWORD
+      MYSQL_DATABASE: xibo
+      MYSQL_USER: xibo
+      MYSQL_PASSWORD: $MYSQL_PASSWORD
+    restart: always
 
-if [[ "$USE_DOMAIN" == "s" ]]; then
-    echo "[7/14] Configurando Apache com proxy reverso..."
+  cms-web:
+    image: xibosignage/xibo-cms:release-3.3.9
+    ports:
+      - "$PORT_HTTP:80"
+    environment:
+      XMR_HOST: cms-xmr
+      MYSQL_HOST: cms-db
+      MYSQL_PASSWORD: $MYSQL_PASSWORD
+    depends_on:
+      - cms-db
+    restart: always
+
+  cms-xmr:
+    image: xibosignage/xibo-xmr:release-0.9.0
+    ports:
+      - "$PORT_XMR:9505"
+    restart: always
+
+  cms-quickchart:
+    image: dannydirect/quickchart
+    restart: always
+EOF
+
+echo "[6/15] Subindo os containers Docker..."
+docker-compose -f docker-compose.custom.yml up -d
+
+# -------- Configurar firewall --------
+echo "[7/15] Configurando firewall (UFW)..."
+ufw allow OpenSSH
+ufw allow "$PORT_HTTP"/tcp
+ufw allow "$PORT_XMR"/tcp
+ufw --force enable
+
+# -------- Configuração do Apache e Certificado (se domínio) --------
+if [[ "$USAR_DOMINIO" =~ ^[Ss]$ ]]; then
+    echo "[8/15] Configurando Apache com proxy reverso para $DOMAIN..."
 
     a2enmod proxy proxy_http headers
 
-    cat <<EOF > /etc/apache2/sites-available/$INSTANCE_NAME.conf
+    cat > /etc/apache2/sites-available/$INSTANCE_NAME.conf <<EOF
 <VirtualHost *:80>
     ServerAdmin $EMAIL
     ServerName $DOMAIN
@@ -134,47 +127,33 @@ if [[ "$USE_DOMAIN" == "s" ]]; then
 </VirtualHost>
 EOF
 
-    a2ensite "$INSTANCE_NAME.conf"
+    a2ensite $INSTANCE_NAME.conf
     systemctl reload apache2
 
-    echo "[8/14] Abrindo portas no firewall UFW..."
-    ufw allow OpenSSH
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    ufw allow $PORT_CMS/tcp
-    ufw --force enable
-
-    echo "[9/14] Instalando Certbot..."
+    echo "[9/15] Instalando Certbot..."
     snap install core && snap refresh core
     apt-get remove certbot -y
     snap install --classic certbot
     ln -sf /snap/bin/certbot /usr/bin/certbot
 
-    echo "[10/14] Emitindo certificado SSL com Certbot..."
+    echo "[10/15] Emitindo certificado SSL com Certbot para $DOMAIN..."
     certbot --apache --non-interactive --agree-tos -m "$EMAIL" -d "$DOMAIN"
 
-    echo "[11/14] Criando regra de renovação automática para Certbot..."
-    cat <<EOF > /etc/cron.daily/certbot-renew
+    echo "[11/15] Criando regra de renovação automática para Certbot..."
+    cat > /etc/cron.daily/certbot-renew <<EOF
 #!/bin/bash
 /usr/bin/certbot renew --quiet --deploy-hook "systemctl reload apache2"
 EOF
     chmod +x /etc/cron.daily/certbot-renew
 
 else
-    echo "[7-11/14] Pulando configuração Apache e SSL, usando IP e portas padrão."
-    echo "[8/14] Abrindo portas no firewall UFW..."
-    ufw allow OpenSSH
-    ufw allow $PORT_HTTP/tcp
-    ufw allow $PORT_CMS/tcp
-    ufw --force enable
+    echo "[8/15] Pulando configuração Apache e SSL, usando IP e portas padrão."
 fi
 
-echo "[12/14] Instalação concluída!"
-echo
+echo "[12/15] Instalação concluída!"
 
-if [[ "$USE_DOMAIN" == "s" ]]; then
+if [[ "$USAR_DOMINIO" =~ ^[Ss]$ ]]; then
     echo "✅ Acesse agora o Xibo CMS:"
-    echo "   👉 http://$DOMAIN"
     echo "   👉 https://$DOMAIN"
 else
     IP_ADDR=$(hostname -I | awk '{print $1}')
@@ -190,6 +169,4 @@ echo
 echo "🔑 Senha do banco MYSQL gerada automaticamente:"
 echo "   $MYSQL_PASSWORD"
 echo
-if [[ "$USE_DOMAIN" == "s" ]]; then
-    echo "🔄 A renovação automática do certificado SSL está configurada."
-fi
+echo "🔄 A renovação automática do certificado SSL está configurada (se configurado)."
