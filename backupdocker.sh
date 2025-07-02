@@ -1,39 +1,38 @@
 #!/bin/bash
-
 set -e
 
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
-BACKUP_FILE="docker_backup_$TIMESTAMP.tar.gz"
+BACKUP_DIR="docker_backup_$TIMESTAMP"
+mkdir -p "$BACKUP_DIR"
 
-echo "Iniciando backup completo do Docker..."
+echo "Salvando todas as imagens Docker..."
+docker images -q | sort | uniq > "$BACKUP_DIR/imagens_ids.txt"
+docker save -o "$BACKUP_DIR/imagens.tar" $(cat "$BACKUP_DIR/imagens_ids.txt")
 
-# Diretórios importantes do Docker
-DOCKER_DIRS=("/var/lib/docker" "/etc/docker")
+echo "Salvando lista de containers (nome, imagem, comando, portas)..."
+docker ps -a --format '{{.Names}}|{{.Image}}|{{.Command}}|{{.Ports}}|{{.Status}}' > "$BACKUP_DIR/containers_info.txt"
 
-# Criar um diretório temporário para armazenar dados
-TMP_DIR=$(mktemp -d)
+echo "Salvando volumes Docker..."
+mkdir -p "$BACKUP_DIR/volumes"
 
-echo "Copiando dados Docker..."
-
-# Copiar os diretórios do Docker para TMP_DIR
-for dir in "${DOCKER_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        echo "Copiando $dir"
-        mkdir -p "$TMP_DIR$(dirname "$dir")"
-        cp -a "$dir" "$TMP_DIR$(dirname "$dir")"
-    else
-        echo "Aviso: diretório $dir não existe, pulando."
-    fi
+volumes=$(docker volume ls -q)
+for vol in $volumes; do
+    echo "Backup do volume: $vol"
+    docker run --rm -v "${vol}:/volume" -v "$(pwd)/$BACKUP_DIR/volumes:/backup" busybox \
+        tar czf "/backup/${vol}.tar.gz" -C /volume .
 done
 
-# Salvar containers ativos (nomes/ids)
-docker ps -a --format '{{.Names}}' > "$TMP_DIR/docker_containers_list.txt"
+echo "Salvando configurações do Docker (se houver)..."
+if [ -d /etc/docker ]; then
+    tar czf "$BACKUP_DIR/docker_configs.tar.gz" /etc/docker
+else
+    echo "Pasta /etc/docker não encontrada, pulando configs."
+fi
 
-echo "Compactando backup em $BACKUP_FILE..."
+echo "Compactando todo backup..."
+tar czf "${BACKUP_DIR}.tar.gz" "$BACKUP_DIR"
 
-tar czf "$BACKUP_FILE" -C "$TMP_DIR" .
+echo "Limpando arquivos temporários..."
+rm -rf "$BACKUP_DIR"
 
-echo "Backup completo salvo em: $BACKUP_FILE"
-
-# Limpar temporário
-rm -rf "$TMP_DIR"
+echo "Backup criado com sucesso: ${BACKUP_DIR}.tar.gz"
