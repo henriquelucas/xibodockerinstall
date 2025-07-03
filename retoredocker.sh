@@ -1,113 +1,91 @@
 #!/bin/bash
 set -e
 
-function instalar_docker_ubuntu() {
-    echo "Instalando Docker no Ubuntu/Debian..."
-    sudo apt update
-    sudo apt install -y apt-transport-https ca-certificates curl software-properties-common
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-    sudo apt update
-    sudo apt install -y docker-ce docker-ce-cli containerd.io
-    echo "Docker instalado."
-}
+read -rp "Informe o diretório do backup: " BACKUP_DIR
 
-function verificar_docker() {
-    if ! command -v docker &>/dev/null; then
-        echo "Docker não está instalado."
-        read -p "Quer instalar o Docker agora? (s/n): " resposta
-        if [[ "$resposta" =~ ^[Ss]$ ]]; then
-            if [ -f /etc/debian_version ]; then
-                instalar_docker_ubuntu
-            else
-                echo "Sistema não suportado para instalação automática."
-                exit 1
-            fi
-        else
-            echo "Docker é necessário para continuar. Abortando."
-            exit 1
-        fi
-    else
-        echo "Docker já instalado."
-    fi
-}
-
-function recriar_containers() {
-    CONTAINERS_FILE="$1"
-
-    if [ ! -f "$CONTAINERS_FILE" ]; then
-        echo "Arquivo de containers não encontrado: $CONTAINERS_FILE"
-        return
-    fi
-
-    echo "Iniciando recriação automática dos containers..."
-
-    while IFS='|' read -r name image cmd ports status; do
-        echo "Recriando container: $name"
-
-        # Remove container se existir
-        if docker ps -a --format '{{.Names}}' | grep -qw "$name"; then
-            echo "Removendo container existente: $name"
-            docker rm -f "$name"
-        fi
-
-        # Montar args de portas
-        PORT_ARGS=()
-        if [ -n "$ports" ]; then
-            IFS=',' read -ra port_array <<< "$ports"
-            for p in "${port_array[@]}"; do
-                host_port="${p%%/*}"
-                PORT_ARGS+=("-p" "$host_port:$host_port")
-            done
-        fi
-
-        # Remover aspas do comando
-        cmd=$(echo "$cmd" | sed -e 's/^"//' -e 's/"$//')
-
-        echo "Executando: docker run -d --name $name ${PORT_ARGS[*]} $image $cmd"
-        docker run -d --name "$name" "${PORT_ARGS[@]}" "$image" sh -c "$cmd"
-    done < "$CONTAINERS_FILE"
-
-    echo "Recriação dos containers concluída."
-}
-
-read -rp "Informe o caminho para o arquivo de backup (.tar.gz): " BACKUP_ARQUIVO
-
-if [ ! -f "$BACKUP_ARQUIVO" ]; then
-    echo "Arquivo não encontrado: $BACKUP_ARQUIVO"
-    exit 1
+if [ ! -d "$BACKUP_DIR" ]; then
+  echo "Diretório de backup não encontrado!"
+  exit 1
 fi
 
-verificar_docker
+IMAGES_FILE="$BACKUP_DIR/imagens.tar"
+CONTAINERS_INFO="$BACKUP_DIR/containers_info.json"
 
-TMP_RESTORE_DIR=$(mktemp -d)
-echo "Extraindo backup..."
-tar xzf "$BACKUP_ARQUIVO" -C "$TMP_RESTORE_DIR"
-
-echo "Restaurando imagens Docker..."
-docker load -i "$TMP_RESTORE_DIR/imagens.tar"
-
-echo "Restaurando volumes Docker..."
-if [ -d "$TMP_RESTORE_DIR/volumes" ]; then
-    for vol_tar in "$TMP_RESTORE_DIR"/volumes/*.tar.gz; do
-        vol_name=$(basename "$vol_tar" .tar.gz)
-        echo "Restaurando volume $vol_name..."
-        docker volume create "$vol_name"
-        docker run --rm -v "${vol_name}:/volume" -v "$TMP_RESTORE_DIR/volumes:/backup" busybox \
-            sh -c "cd /volume && tar xzf /backup/${vol_name}.tar.gz"
-    done
-else
-    echo "Nenhum volume encontrado para restaurar."
+if [ ! -f "$IMAGES_FILE" ] || [ ! -f "$CONTAINERS_INFO" ]; then
+  echo "Arquivo de imagens ou containers_info.json não encontrado no backup."
+  exit 1
 fi
 
-echo "Configurações do Docker..."
-if [ -f "$TMP_RESTORE_DIR/docker_configs.tar.gz" ]; then
-    echo "As configurações foram salvas. Para restaurar, execute manualmente:"
-    echo "sudo tar xzf $TMP_RESTORE_DIR/docker_configs.tar.gz -C /"
-fi
+echo "Restaurando imagens..."
+docker load -i "$IMAGES_FILE"
 
-recriar_containers "$TMP_RESTORE_DIR/containers_info.txt"
+echo "Restaurando volumes..."
+for voltar in "$BACKUP_DIR/volumes/"*.tar.gz; do
+  volname=$(basename "$voltar" .tar.gz)
+  echo "Restaurando volume $volname"
+  docker volume create "$volname"
+  docker run --rm -v "${volname}:/volume" -v "${BACKUP_DIR}/volumes:/backup" busybox \
+    sh -c "cd /volume && tar xzf /backup/${volname}.tar.gz"
+done
 
-rm -rf "$TMP_RESTORE_DIR"
+echo "Recriando containers..."
+containers_count=$(jq length "$CONTAINERS_INFO")
 
-echo "Restauração e recriação concluídas!"
+for i in $(seq 0 $((containers_count - 1))); do
+  c=$(jq ".[$i]" "$CONTAINERS_INFO")
+
+  name=$(echo "$c" | jq -r '.Name' | sed 's|^/||')
+  image=$(echo "$c" | jq -r '.Config.Image')
+  echo "Recriando container: $name"
+
+  # Remove container anterior se já existir
+  docker rm -f "$name" >/dev/null 2>&1 || true
+
+  # Portas
+  port_args=""
+  ports=$(echo "$c" | jq -r '
+    .HostConfig.PortBindings // {} |
+    to_entries[]? |
+    select(.value != null and .value[0].HostPort != null) |
+    "\(.value[0].HostPort):\(.key)"
+  ')
+  for p in $ports; do
+    port_args+="-p $p "
+  done
+
+  # Volumes
+  volume_args=""
+  mounts=$(echo "$c" | jq -r '
+    .Mounts // [] |
+    map(select(.Type == "volume")) |
+    map("\(.Name):\(.Destination)") |
+    .[]
+  ')
+  for v in $mounts; do
+    volume_args+="-v $v "
+  done
+
+  # Variáveis de ambiente
+  env_args=""
+  envs=$(echo "$c" | jq -r '.Config.Env // [] | .[]')
+  for e in $envs; do
+    env_args+="-e $e "
+  done
+
+  # Comando (tratando null)
+  cmd=$(echo "$c" | jq -r '.Config.Cmd // [] | join(" ")')
+
+  # Rede
+  network=$(echo "$c" | jq -r '.HostConfig.NetworkMode')
+
+  # Garantir que a rede existe
+  if ! docker network ls --format '{{.Name}}' | grep -q "^$network$"; then
+    echo "Criando rede $network"
+    docker network create "$network"
+  fi
+
+  # Executa o container
+  docker run -d --name "$name" $port_args $volume_args $env_args --network "$network" "$image" $cmd
+done
+
+echo "✅ Restauração completa!"
