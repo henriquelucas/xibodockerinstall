@@ -8,7 +8,6 @@ if [ -z "$BASE_CONTAINER" ]; then
   exit 1
 fi
 
-# Extrai prefixo do nome (até primeiro underscore)
 PREFIX=$(echo "$BASE_CONTAINER" | cut -d'_' -f1)
 
 if [ -z "$PREFIX" ]; then
@@ -21,7 +20,6 @@ mkdir -p "$BACKUP_DIR/volumes"
 
 echo "Criando backup para containers com prefixo: $PREFIX*"
 
-# Lista containers com o prefixo
 CONTAINERS=$(docker ps -a --format '{{.Names}}' | grep "^${PREFIX}_")
 
 if [ -z "$CONTAINERS" ]; then
@@ -29,42 +27,52 @@ if [ -z "$CONTAINERS" ]; then
   exit 1
 fi
 
-# Arquivo info containers
-CONTAINERS_INFO="$BACKUP_DIR/containers_info.txt"
-: > "$CONTAINERS_INFO"
-
+CONTAINERS_INFO="$BACKUP_DIR/containers_info.json"
 IMAGES_TO_SAVE=()
+VOLUMES_TO_SAVE=()
 
-# Backup containers info e imagens
+# Criar um JSON com todas informações relevantes dos containers
+echo "[" > "$CONTAINERS_INFO"
+
 for c in $CONTAINERS; do
   echo "Processando container $c"
+  
+  # Inspeciona o container em JSON
+  info=$(docker inspect "$c")
+
+  # Extrai a imagem
   image=$(docker inspect --format '{{.Config.Image}}' "$c")
-  cmd=$(docker inspect --format '{{json .Config.Cmd}}' "$c")
-  ports=$(docker inspect --format '{{range $p, $conf := .HostConfig.PortBindings}}{{$p}}{{end}}' "$c")
-  status=$(docker inspect --format '{{.State.Status}}' "$c")
-
-  # Salva linha no arquivo de info (pipe separado)
-  echo "${c}|${image}|${cmd}|${ports}|${status}" >> "$CONTAINERS_INFO"
-
   IMAGES_TO_SAVE+=("$image")
+
+  # Extrai volumes tipo "volume"
+  vols=$(docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$c")
+  for vol in $vols; do
+    VOLUMES_TO_SAVE+=("$vol")
+  done
+
+  # Append do JSON (retirando colchetes para concatenar)
+  # Remove primeiro e último caractere do JSON array para concatenar corretamente
+  stripped=$(echo "$info" | sed '1d;$d')
+
+  echo "$stripped," >> "$CONTAINERS_INFO"
 done
 
-# Remove duplicatas de imagens
+# Fecha JSON removendo última vírgula
+sed -i '$ s/,$//' "$CONTAINERS_INFO"
+echo "]" >> "$CONTAINERS_INFO"
+
+# Remove duplicatas de imagens e volumes
 IMAGES_TO_SAVE=($(echo "${IMAGES_TO_SAVE[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+VOLUMES_TO_SAVE=($(echo "${VOLUMES_TO_SAVE[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
 
 echo "Salvando imagens Docker..."
 docker save "${IMAGES_TO_SAVE[@]}" -o "$BACKUP_DIR/imagens.tar"
 
 echo "Salvando volumes usados pelos containers..."
-
-# Pega volumes usados pelos containers
-for c in $CONTAINERS; do
-  vols=$(docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$c")
-  for vol in $vols; do
-    echo "Salvando volume $vol"
-    docker run --rm -v "${vol}:/volume" -v "$(pwd)/$BACKUP_DIR/volumes:/backup" busybox \
-      sh -c "cd /volume && tar czf /backup/${vol}.tar.gz ."
-  done
+for vol in "${VOLUMES_TO_SAVE[@]}"; do
+  echo "Salvando volume $vol"
+  docker run --rm -v "${vol}:/volume" -v "$(pwd)/$BACKUP_DIR/volumes:/backup" busybox \
+    sh -c "cd /volume && tar czf /backup/${vol}.tar.gz ."
 done
 
 echo "Backup completo salvo em $BACKUP_DIR"
