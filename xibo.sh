@@ -20,8 +20,6 @@ INSTANCE_INDEX=$((NUM_INSTANCES + 1))
 INSTANCE_NAME="xibo${INSTANCE_INDEX}"
 
 # -------- Definições de portas baseadas no índice --------
-# HTTP padrão: 8080 + (INSTANCE_INDEX -1)*10  (ex: xibo1=8080, xibo2=8090)
-# XMR padrão: 9505 + (INSTANCE_INDEX -1)*10   (ex: xibo1=9505, xibo2=9515)
 PORT_HTTP=$((8080 + (INSTANCE_INDEX - 1) * 10))
 PORT_XMR=$((9505 + (INSTANCE_INDEX - 1) * 10))
 
@@ -39,8 +37,9 @@ apt update && apt install -y docker-compose apache2 snapd unzip curl ufw
 
 echo "[2/15] Criando diretório do Xibo e pastas para persistência..."
 mkdir -p "$XIBO_DIR/mysql"
-mkdir -p "$XIBO_DIR/shared"
-mkdir -p "$XIBO_DIR/web/media"
+mkdir -p "$XIBO_DIR/cms/shared"
+mkdir -p "$XIBO_DIR/cms/web/media"
+mkdir -p "$XIBO_DIR/cms/library"
 cd "$XIBO_DIR" || { echo "Erro ao acessar diretório $XIBO_DIR"; exit 1; }
 
 echo "[3/15] Baixando e extraindo arquivos do Xibo..."
@@ -84,8 +83,9 @@ services:
     depends_on:
       - cms-db
     volumes:
-      - ./shared:/var/www/cms/shared
-      - ./web/media:/var/www/cms/web/media
+      - ./cms/shared:/var/www/cms/shared
+      - ./cms/web/media:/var/www/cms/web/media
+      - ./cms/library:/var/www/cms/library
     restart: always
 
   cms-xmr:
@@ -108,7 +108,6 @@ EOF
 echo "[6/15] Subindo os containers Docker..."
 docker-compose -f docker-compose.custom.yml up -d
 
-# -------- Configurar firewall --------
 echo "[7/15] Configurando firewall (UFW)..."
 ufw allow OpenSSH
 ufw allow "$PORT_HTTP"/tcp
