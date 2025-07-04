@@ -37,8 +37,10 @@ echo
 echo "[1/15] Instalando dependências..."
 apt update && apt install -y docker-compose apache2 snapd unzip curl ufw
 
-echo "[2/15] Criando diretório do Xibo..."
-mkdir -p "$XIBO_DIR"
+echo "[2/15] Criando diretório do Xibo e pastas para persistência..."
+mkdir -p "$XIBO_DIR/mysql"
+mkdir -p "$XIBO_DIR/shared"
+mkdir -p "$XIBO_DIR/web/media"
 cd "$XIBO_DIR" || { echo "Erro ao acessar diretório $XIBO_DIR"; exit 1; }
 
 echo "[3/15] Baixando e extraindo arquivos do Xibo..."
@@ -53,8 +55,8 @@ cp config.env.template config.env
 MYSQL_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16 ; echo '')
 sed -i "s/^MYSQL_PASSWORD=.*/MYSQL_PASSWORD=$MYSQL_PASSWORD/" config.env
 
-# -------- Criar docker-compose customizado para as portas --------
-echo "[5/15] Criando docker-compose customizado com portas personalizadas..."
+# -------- Criar docker-compose customizado para as portas e volumes --------
+echo "[5/15] Criando docker-compose customizado com volumes persistentes..."
 
 cat > docker-compose.custom.yml <<EOF
 version: "3.7"
@@ -81,6 +83,9 @@ services:
       MYSQL_PASSWORD: $MYSQL_PASSWORD
     depends_on:
       - cms-db
+    volumes:
+      - ./shared:/var/www/cms/shared
+      - ./web/media:/var/www/cms/web/media
     restart: always
 
   cms-xmr:
@@ -88,11 +93,12 @@ services:
     ports:
       - "$PORT_XMR:9505"
     restart: always
+
   cms-memcached:
-        image: memcached:alpine
-        command: memcached -m 15
-        restart: always
-        mem_limit: 100M
+    image: memcached:alpine
+    command: memcached -m 15
+    restart: always
+    mem_limit: 100M
 
   cms-quickchart:
     image: ianw/quickchart
